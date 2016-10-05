@@ -19,7 +19,6 @@ struct DataPacket {
 	uint8_t bRequest;
 	uint16_t wValue;
 	uint16_t wIndex;
-	unsigned char buff[512];
 	uint16_t length;
 };
 
