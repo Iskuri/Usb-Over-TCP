@@ -259,12 +259,16 @@ int main(int argc, char *argv[]) {
     		if(dataRequest.bmRequestType&0x80) {
     			printf("Running read\n");
     			int readSize = read(sockfd,dataBuff,dataRequest.length);
+    			printf("Finished read\n");
     		}
 			int transferred = libusb_control_transfer (deviceHandler, dataRequest.bmRequestType, dataRequest.bRequest, dataRequest.wValue, dataRequest.wIndex, dataBuff, dataRequest.length, 255);
+
+			printf("Libusb control transferred: %d\n",transferred);
     	
 			if((dataRequest.bmRequestType&0x80) == 0) {
 				printf("Running write\n");
 				write(sockfd,dataBuff,dataRequest.length);
+				printf("Written write\n");
 			}
 
     	} else {

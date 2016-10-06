@@ -73,9 +73,9 @@ void receiveTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint,unsigned
 
 static void handleSetup(struct usb_ctrlrequest *setup) {
 	
-	uint16_t value = __le16_to_cpu(setup->wValue);
-	uint16_t index = __le16_to_cpu(setup->wIndex);
-	uint16_t length = __le16_to_cpu(setup->wLength);
+	uin16_t value = __le16_to_cpu(setup->wValue);
+	uin16_t index = __le16_to_cpu(setup->wIndex);
+	uin16_t length = __le16_to_cpu(setup->wLength);
 
 	printf("Got USB bRequest: %d(%02x) with type %d(%02x) of length %d\n",setup->bRequest,setup->bRequest,setup->bRequestType, setup->bRequestType, setup->wLength);
 
@@ -86,12 +86,14 @@ static void handleSetup(struct usb_ctrlrequest *setup) {
 	if(setup->bRequestType&0x80) {
 
 		/* get buff */
+		printf("Receiving from host\n");
 		receiveTransaction(setup,0x00,buf,length);
 		write(gadgetFile, buf, length);
 
 	} else {
 
 		/* send buff */
+		printf("Sending to host\n");
 		read(gadgetFile, buf, length);
 		sendTransaction(setup,0x00,buf,length);
 
