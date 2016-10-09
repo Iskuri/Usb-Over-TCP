@@ -367,11 +367,13 @@ int main(int argc, char *argv[]) {
 	    			sendData(sockfd,dataBuff,64,readSize);	
 	    		}
 
-	    		printf("Endpoint (%02x) :",dataRequest.endpoint);
-	    		for(int i = 0 ; i < readSize ; i++) {
-	    			printf("%02x ",dataBuff[i]);
+	    		if(readSize > 0) {
+		    		printf("Endpoint (%02x) :",dataRequest.endpoint);
+		    		for(int i = 0 ; i < readSize ; i++) {
+		    			printf("%02x ",dataBuff[i]);
+		    		}
+		    		printf("\n");
 	    		}
-	    		printf("\n");
 
 	    	}
     	}

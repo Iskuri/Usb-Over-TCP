@@ -105,12 +105,12 @@ int receiveTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint,unsigned 
 
 	memcpy(buff,&changedBuff[2],receivedVal);
 
-	printf("Got readval: (%d) ",receivedVal);
+	// printf("Got readval: (%d) ",receivedVal);
 
-	for(int i = 0 ; i < receivedVal ; i++) {
-		printf("%02x ",buff[i]);
-	}
-	printf("\n");
+	// for(int i = 0 ; i < receivedVal ; i++) {
+	// 	printf("%02x ",buff[i]);
+	// }
+	// printf("\n");
 
 	free(changedBuff);
 
@@ -201,8 +201,8 @@ static void* checkEps(void* nothing) {
 						// printf("Before endpoint in transaction\n");
 						readCount = receiveTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
 
-						printf("(%d)Requesting in (%d): ",pollEps[i].fd,readCount);
 						if(readCount > 0) {
+							printf("(%d)Requesting in (%d): ",pollEps[i].fd,readCount);
 							int writeVal = write(pollEps[i].fd, endpointInfo[i].buff, readCount);
 						}
 
@@ -211,18 +211,21 @@ static void* checkEps(void* nothing) {
 						// printf("On requesting out\n");
 
 						readCount = read(pollEps[i].fd,endpointInfo[i].buff,64);
-						printf("(%d)Requesting out (%d): ",pollEps[i].fd,readCount);
-
+						if(readCount > 0) {
+							printf("(%d)Requesting out (%d): ",pollEps[i].fd,readCount);
+						}	
 						int readLength = sendTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
 
 						// printf("After send transaction\n");
 
 					}
 
-					for(int j = 0 ; j < readCount ; j++) {
-						printf("%02x ",endpointInfo[i].buff[j]);
+					if(readCount > 0) {
+						for(int j = 0 ; j < readCount ; j++) {
+							printf("%02x ",endpointInfo[i].buff[j]);
+						}
+						printf("\n");
 					}
-					printf("\n");
 
 				}
 			}		
