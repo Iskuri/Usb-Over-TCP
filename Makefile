@@ -1,5 +1,5 @@
 all:
-	rm -f usb-network-device usb-network-host
+	#rm -f usb-network-device usb-network-host
 	g++ -I /usr/local/include -lusb-1.0 host/main.cpp -o usb-network-host
 	g++ -I /usr/local/include  -lusb-1.0 device/main.cpp -o usb-network-device
 

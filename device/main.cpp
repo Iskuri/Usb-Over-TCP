@@ -27,7 +27,7 @@ int sockfd, newsockfd, portno;
 int gadgetFile;
 
 static pthread_t gadgetThread;
-static pthread_t readerThread;
+static pthread_t epThread;
 static pthread_mutex_t deviceMutex;
 
 void setupPacket(struct DataPacket* dataPacket, struct usb_ctrlrequest *setup, uint8_t endpoint) {
@@ -40,42 +40,61 @@ void setupPacket(struct DataPacket* dataPacket, struct usb_ctrlrequest *setup, u
 	dataPacket->length = setup->wLength;	
 }
 
-void sendTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint, unsigned char* buff, uint16_t length) {
+int sendTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint, unsigned char* buff, uint16_t length) {
 
 	pthread_mutex_lock(&deviceMutex);
 
 	struct DataPacket dataPacket;
 
-	setupPacket(&dataPacket,setup,endpoint);
+	memset(&dataPacket,0x00,sizeof(struct DataPacket));
+
+	if(setup != NULL) {
+		setupPacket(&dataPacket,setup,endpoint);
+	}
 
 	write(newsockfd,(unsigned char*)&dataPacket,sizeof(struct DataPacket));
 
-	write(newsockfd,buff,length);
+	int writeVal = write(newsockfd,buff,length);
 
 	pthread_mutex_unlock(&deviceMutex);
 
+	return writeVal;
 }
 
-void receiveTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint,unsigned char* buff,uint16_t length) {
+int receiveTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint,unsigned char* buff,uint16_t length) {
 
 	pthread_mutex_lock(&deviceMutex);
 
 	struct DataPacket dataPacket;
 
-	setupPacket(&dataPacket,setup,endpoint);
+	memset(&dataPacket,0x00,sizeof(struct DataPacket));
 
-	write(newsockfd,(unsigned char*)&dataPacket,sizeof(struct DataPacket));
+	if(setup != NULL) {
+		setupPacket(&dataPacket,setup,endpoint);
+	}
 
-	read(newsockfd,buff,length);
+	dataPacket.endpoint = endpoint;
+
+	printf("Writing new sock datapacket\n");
+
+	int writeDataPacketRet = write(newsockfd,(unsigned char*)&dataPacket,sizeof(struct DataPacket));
+
+	printf("Reading data back\n");
+
+	int readVal = read(newsockfd,buff,length);
+
+	printf("Got readval: %d\n",readVal);
 
 	pthread_mutex_unlock(&deviceMutex);
+
+	return readVal;
 }
 
 static void handleSetup(struct usb_ctrlrequest *setup) {
 	
-	uin16_t value = __le16_to_cpu(setup->wValue);
-	uin16_t index = __le16_to_cpu(setup->wIndex);
-	uin16_t length = __le16_to_cpu(setup->wLength);
+	uint16_t value = __le16_to_cpu(setup->wValue);
+	uint16_t index = __le16_to_cpu(setup->wIndex);
+	uint16_t length = __le16_to_cpu(setup->wLength);
 
 	printf("Got USB bRequest: %d(%02x) with type %d(%02x) of length %d\n",setup->bRequest,setup->bRequest,setup->bRequestType, setup->bRequestType, setup->wLength);
 
@@ -99,7 +118,75 @@ static void handleSetup(struct usb_ctrlrequest *setup) {
 
 	}
 
+	printf("Got buff: ");
+	for(int i = 0 ; i < length ; i++) {
+		printf("%02x ",buf[i]);
+	}
+	printf("\n");
+
 	free(buf);
+
+}
+
+struct EndpointInfo {
+	uint8_t ep;
+	unsigned char buff[64];
+	uint8_t epMaxPacketSize;
+};
+
+struct EndpointInfo endpointInfo[32];
+
+int pollEpsInc;
+struct pollfd pollEps[32];
+uint32_t setEps = 0;
+
+static void* checkEps(void* nothing) {
+
+	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+
+	while(true) {
+
+		int pollVal = poll((pollfd*)&pollEps,pollEpsInc,500);
+
+		if(pollVal >= 0) { 
+
+			//printf("Got poll: %d is revents\n",pollVal);
+
+			for(int i = 0 ; i < pollEpsInc ; i++) {
+
+			//	printf("Checking poll: %d\n",i);
+
+				if(pollEps[i].revents) {
+					// printf("Got event for: %02x\n",endpointInfo[i].ep);
+
+					if(endpointInfo[i].ep&0x80) {
+
+						// do host request
+						printf("Requesting in\n");
+						int readLength = receiveTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
+						write(pollEps[i].fd, endpointInfo[i].buff, readLength);
+
+					} else {
+
+						printf("Requesting output!!\n");
+
+						int readCount = read(pollEps[i].fd,endpointInfo[i].buff,64);
+						printf("(%d)Requesting out (%d): ",pollEps[i].fd,readCount);
+						for(int j = 0 ; j < readCount ; j++) {
+							printf("%02x ",endpointInfo[i].buff[j]);
+						}
+						printf("\n");
+
+						int readLength = sendTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
+
+					}
+
+				}
+			}
+
+		}
+
+	}
 
 }
 
@@ -118,7 +205,7 @@ static void* gadgetCfgCb(void* nothing) {
 	
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
-	while(1) {
+	while(true) {
 		
 		// printf("At gadget polling\n");
 
@@ -171,6 +258,7 @@ void checkInt(int val) {
 
 	printf("Checking int\n");
 	run = false;
+	shutdown(newsockfd,SHUT_RDWR);
 	close(newsockfd);
 	close(sockfd);	
 	exit(0);
@@ -192,6 +280,11 @@ int main(int argc, char *argv[]) {
 	if (sockfd < 0)  {
 		printf("Couldn't open socket\n");	
 		return 1;
+	}
+
+	int enable = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+    	printf("setsockopt(SO_REUSEADDR) failed\n");
 	}
 
 	serv_addr.sin_family = AF_INET;
@@ -246,7 +339,64 @@ int main(int argc, char *argv[]) {
 		
 		pthread_create(&gadgetThread,0,gadgetCfgCb,NULL);
 
+		sleep(3);
 
+		int epPtr = 4;
+
+		setEps = 0;
+		pollEpsInc = 0;
+
+		while(epPtr < gadgetFileSize) {
+
+			int readSize = buffer[epPtr];
+
+			if(buffer[epPtr+1] == 5 && (setEps&(1<<(buffer[epPtr+2]&0xf))<<((buffer[epPtr+2]&0x80)?16:0))==0) { // check if hid descriptor
+
+				printf("Found endpoint: %02x\n",buffer[epPtr+2]);
+
+				char epBuffStr[0xff];
+				sprintf(epBuffStr,"/dev/gadget/ep%d%s",buffer[epPtr+2]&0xf,(buffer[epPtr+2]&0x80)?"in":"out");
+
+				int file = open(epBuffStr, O_CLOEXEC | O_RDWR);
+				printf("Writing to file %s (%d)\n",epBuffStr,file);
+
+				if(file>=0) {
+
+					unsigned char* epFileBuff = (unsigned char*)malloc(4+readSize*2);
+
+					memset(epFileBuff,0x00,4+readSize*2);
+					epFileBuff[0] = 0x01;
+					int epFileBuffInc = 4;
+					memcpy(&epFileBuff[epFileBuffInc],&buffer[epPtr],readSize);
+					epFileBuffInc += readSize;
+					memcpy(&epFileBuff[epFileBuffInc],&buffer[epPtr],readSize);
+
+					printf("Writing to %s (%d): ",epBuffStr,4+readSize*2);
+					for(int i = 0 ; i < (4+readSize*2) ; i++) {
+						printf("%02x ",epFileBuff[i]);
+					}
+					printf("\n");
+
+				    int epWrite = write(file,epFileBuff,4+readSize*2);
+				    free(epFileBuff);
+					printf("Ep write got: %d\n",epWrite);
+
+					pollEps[pollEpsInc].fd = file;
+
+					pollEps[pollEpsInc].events=POLLIN | POLLHUP | POLLOUT;
+
+					endpointInfo[pollEpsInc].ep = buffer[epPtr+2];
+
+					pollEpsInc++;
+    				
+				}
+
+				setEps |= (1<<(buffer[epPtr+2]&0xf))<<((buffer[epPtr+2]&0x80)?16:0);
+			}
+			epPtr += readSize;
+		}
+
+		pthread_create(&epThread,0,checkEps,NULL);
 
 	}
 

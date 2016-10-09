@@ -89,6 +89,9 @@ int createGadgetFileData(libusb_device* dev,unsigned char* deviceData) {
 
 						struct libusb_endpoint_descriptor* endpoint;
 						endpoint = (struct libusb_endpoint_descriptor*)&interface->altsetting[k].endpoint[l];
+						
+						// endpoint->bInterval = 0xff; // add a big forced wait time
+
 						memcpy(&deviceData[offset],endpoint,endpoint->bLength);
 						offset += endpoint->bLength;
 					}
@@ -131,9 +134,13 @@ int receiveData(int sockfd, unsigned char* data, int length) {
 
 	while(tries > 0) {
 
+		printf("On reading %d\n",length);
+
 		int ret = read(sockfd,data,length);
+		printf("Receive data status: %d\n",ret);
 
 		if(ret >= 0) {
+
 			status = 0;
 			break;
 		}
@@ -161,7 +168,7 @@ int main(int argc, char *argv[]) {
     int devicesCount = libusb_get_device_list(context, &devices);
 
     struct libusb_device_descriptor descriptor;
-    libusb_device_handle* deviceHandler;
+    libusb_device_handle* deviceHandler = 0;
 
 	uint16_t vid, pid;
 
@@ -204,6 +211,25 @@ int main(int argc, char *argv[]) {
     	printf("Couldn't find device\n");
     	return 1;
     }
+
+    // claim interface
+
+	if (libusb_kernel_driver_active(deviceHandler, 0) == 1) {
+		printf("Detaching kernel driver\n");
+		retVal = libusb_detach_kernel_driver(deviceHandler, 0);
+		if (retVal < 0) {
+			libusb_close(deviceHandler);
+		}
+	}
+
+	retVal = libusb_claim_interface(deviceHandler, 0);
+
+	if(retVal < 0) {
+
+		printf("Claiming failed\n");
+		// return 1;
+	}
+
 
     if(descriptor.bDeviceClass == LIBUSB_CLASS_HUB) {
     	printf("Cannot support hubs\n");
@@ -248,49 +274,59 @@ int main(int argc, char *argv[]) {
 
     	struct DataPacket dataRequest;
 
+    	printf("Waiting on receiving\n");
+
     	int ret = receiveData(sockfd, (unsigned char*)&dataRequest, sizeof(struct DataPacket));
 
     	unsigned char* dataBuff = (unsigned char*)malloc(dataRequest.length);
 
     	printf("Handling request on endpoint: %02x\n",dataRequest.endpoint);
 
-    	if(dataRequest.endpoint == 0) {
+    	if(ret >= 0) {
 
-    		if(dataRequest.bmRequestType&0x80) {
-    			printf("Running read\n");
-    			int readSize = read(sockfd,dataBuff,dataRequest.length);
-    			printf("Finished read\n");
-    		}
-			int transferred = libusb_control_transfer (deviceHandler, dataRequest.bmRequestType, dataRequest.bRequest, dataRequest.wValue, dataRequest.wIndex, dataBuff, dataRequest.length, 255);
+	    	if(dataRequest.endpoint == 0) {
 
-			printf("Libusb control transferred: %d\n",transferred);
-    	
-			if((dataRequest.bmRequestType&0x80) == 0) {
-				printf("Running write\n");
-				write(sockfd,dataBuff,dataRequest.length);
-				printf("Written write\n");
-			}
+	    		printf("Brequest: %02x BmRequestType: %02x\n",dataRequest.bRequest,dataRequest.bmRequestType);
 
-    	} else {
+	    		// if(dataRequest.bmRequestType&0x80) {
+	    		if((dataRequest.bmRequestType&0x80)==0) {
+	    			printf("Running read\n");
+	    			int readSize = read(sockfd,dataBuff,dataRequest.length);
+	    			printf("Finished read %d\n",readSize);
+	    		}
+				int transferred = libusb_control_transfer(deviceHandler, dataRequest.bmRequestType, dataRequest.bRequest, dataRequest.wValue, dataRequest.wIndex, dataBuff, dataRequest.length, 255);
 
-    		// in out &0x80
-    		if(dataRequest.endpoint&0x80) {
-    			int readSize = read(sockfd,dataBuff,dataRequest.length);
-    		}
+				printf("Libusb control transferred: %d\n",transferred);
+	    	
+				// if((dataRequest.bmRequestType&0x80) == 0) {
+				if((dataRequest.bmRequestType&0x80)) {
+					printf("Running write\n");
+					write(sockfd,dataBuff,dataRequest.length);
+					printf("Written write\n");
+				}
 
-    		// check endpoint type
+	    	} else {
 
-    		int transferred;
-    		int interruptTransferVal = libusb_interrupt_transfer(deviceHandler,dataRequest.endpoint,dataBuff,dataRequest.length,&transferred,255);		
-    		printf("Interrupt transfer value: %d\n",interruptTransferVal);
+	    		// in out &0x80
+	    		// if(dataRequest.endpoint&0x80) {
+	    		if((dataRequest.endpoint&0x80) == 0) {
+	    			int readSize = read(sockfd,dataBuff,dataRequest.length);
+	    		}
 
-    		// write if needed
-    		if((dataRequest.endpoint&0x80) == 0) {
-    			write(sockfd,dataBuff,dataRequest.length);	
-    		}
+	    		// check endpoint type
 
+	    		int transferred;
+	    		int interruptTransferVal = libusb_interrupt_transfer(deviceHandler,dataRequest.endpoint,dataBuff,dataRequest.length,&transferred,255);		
+	    		printf("Interrupt transfer value: %d\n",interruptTransferVal);
+
+	    		// write if needed
+	    		// if((dataRequest.endpoint&0x80) == 0) {
+	    		if(dataRequest.endpoint&0x80) {
+	    			write(sockfd,dataBuff,dataRequest.length);	
+	    		}
+
+	    	}
     	}
-
     	free(dataBuff);
 
     }
