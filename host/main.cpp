@@ -107,7 +107,26 @@ int createGadgetFileData(libusb_device* dev,unsigned char* deviceData) {
 	return offset;
 }
 
-int sendData(int sockfd, unsigned char* data, int length) {
+// int sendData(int sockfd, unsigned char* data, int length) {
+
+// 	int tries = 5;
+
+// 	int status = -1;
+
+// 	while(tries > 0) {
+
+// 		int ret = write(sockfd,data,length);
+
+// 		if(ret >= 0) {
+// 			status = 0;
+// 			break;
+// 		}
+// 	}
+
+// 	return status;
+// }
+
+int receiveHeader(int sockfd, unsigned char* data, int length) {
 
 	int tries = 5;
 
@@ -115,9 +134,13 @@ int sendData(int sockfd, unsigned char* data, int length) {
 
 	while(tries > 0) {
 
-		int ret = write(sockfd,data,length);
+		// printf("On reading %d\n",length);
+
+		int ret = read(sockfd,data,length);
+		// printf("Receive data status: %d\n",ret);
 
 		if(ret >= 0) {
+
 			status = 0;
 			break;
 		}
@@ -126,27 +149,38 @@ int sendData(int sockfd, unsigned char* data, int length) {
 	return status;
 }
 
-int receiveData(int sockfd, unsigned char* data, int length) {
+int receiveData(int sockfd, unsigned char* buff, int length) {
 
-	int tries = 5;
+	unsigned char* receiveBuff = (unsigned char*)malloc(length+2);
 
-	int status = -1;
+	int data = read(sockfd,receiveBuff,length+2);
 
-	while(tries > 0) {
+	uint16_t receivedAmount;
+	memcpy(&receivedAmount,receiveBuff,2);
 
-		printf("On reading %d\n",length);
+	// printf("Received amount: %d\n",receivedAmount);
 
-		int ret = read(sockfd,data,length);
-		printf("Receive data status: %d\n",ret);
+	memcpy(buff,&receiveBuff[2],receivedAmount);
 
-		if(ret >= 0) {
+	free(receiveBuff);
 
-			status = 0;
-			break;
-		}
-	}
+	return receivedAmount;
+}
 
-	return status;
+int sendData(int sockfd, unsigned char* buff, int forcedSize, int length) {
+
+	unsigned char* sendBuff = (unsigned char*)malloc(length+2);
+
+	memcpy(sendBuff,(unsigned char*)&length,2);
+	memcpy(&sendBuff[2],buff,length);
+
+	// printf("Sending length: %d\n",length);
+
+	int written = write(sockfd,sendBuff,forcedSize+2);
+
+	free(sendBuff);
+
+	return written;
 }
 
 int main(int argc, char *argv[]) {
@@ -213,7 +247,6 @@ int main(int argc, char *argv[]) {
     }
 
     // claim interface
-
 	if (libusb_kernel_driver_active(deviceHandler, 0) == 1) {
 		printf("Detaching kernel driver\n");
 		retVal = libusb_detach_kernel_driver(deviceHandler, 0);
@@ -274,56 +307,71 @@ int main(int argc, char *argv[]) {
 
     	struct DataPacket dataRequest;
 
-    	printf("Waiting on receiving\n");
+    	// printf("Waiting on receiving\n");
 
-    	int ret = receiveData(sockfd, (unsigned char*)&dataRequest, sizeof(struct DataPacket));
+    	int ret = receiveHeader(sockfd, (unsigned char*)&dataRequest, sizeof(struct DataPacket));
 
     	unsigned char* dataBuff = (unsigned char*)malloc(dataRequest.length);
 
-    	printf("Handling request on endpoint: %02x\n",dataRequest.endpoint);
+    	// printf("Handling request on endpoint: %02x\n",dataRequest.endpoint);
 
     	if(ret >= 0) {
 
 	    	if(dataRequest.endpoint == 0) {
 
-	    		printf("Brequest: %02x BmRequestType: %02x\n",dataRequest.bRequest,dataRequest.bmRequestType);
+	    		// printf("Brequest: %02x BmRequestType: %02x\n",dataRequest.bRequest,dataRequest.bmRequestType);
+
+	    		int readSize = dataRequest.length;
 
 	    		// if(dataRequest.bmRequestType&0x80) {
 	    		if((dataRequest.bmRequestType&0x80)==0) {
-	    			printf("Running read\n");
-	    			int readSize = read(sockfd,dataBuff,dataRequest.length);
-	    			printf("Finished read %d\n",readSize);
-	    		}
-				int transferred = libusb_control_transfer(deviceHandler, dataRequest.bmRequestType, dataRequest.bRequest, dataRequest.wValue, dataRequest.wIndex, dataBuff, dataRequest.length, 255);
+	    			// printf("Running read\n");
+	    			readSize = receiveData(sockfd,dataBuff,dataRequest.length);
 
-				printf("Libusb control transferred: %d\n",transferred);
+	    			// printf("Finished read %d\n",readSize);
+	    		}
+				int transferred = libusb_control_transfer(deviceHandler, dataRequest.bmRequestType, dataRequest.bRequest, dataRequest.wValue, dataRequest.wIndex, dataBuff, readSize, 255);
+
+				// printf("Libusb control transferred: %d\n",transferred);
 	    	
+				readSize = transferred;
+
 				// if((dataRequest.bmRequestType&0x80) == 0) {
 				if((dataRequest.bmRequestType&0x80)) {
-					printf("Running write\n");
-					write(sockfd,dataBuff,dataRequest.length);
-					printf("Written write\n");
+					// printf("Running write\n");
+					sendData(sockfd,dataBuff,readSize,readSize);
+					// printf("Written write\n");
 				}
 
 	    	} else {
 
+	    		int readSize = dataRequest.length;
+
 	    		// in out &0x80
 	    		// if(dataRequest.endpoint&0x80) {
 	    		if((dataRequest.endpoint&0x80) == 0) {
-	    			int readSize = read(sockfd,dataBuff,dataRequest.length);
+	    			readSize = receiveData(sockfd,dataBuff,dataRequest.length);
 	    		}
 
 	    		// check endpoint type
 
 	    		int transferred;
-	    		int interruptTransferVal = libusb_interrupt_transfer(deviceHandler,dataRequest.endpoint,dataBuff,dataRequest.length,&transferred,255);		
-	    		printf("Interrupt transfer value: %d\n",interruptTransferVal);
+	    		int interruptTransferVal = libusb_interrupt_transfer(deviceHandler,dataRequest.endpoint,dataBuff,64,&transferred,255);		
+	    		// printf("(%02x)Interrupt transfer value: %d %d\n",dataRequest.endpoint,interruptTransferVal,transferred);
+
+	    		readSize = transferred;
 
 	    		// write if needed
 	    		// if((dataRequest.endpoint&0x80) == 0) {
 	    		if(dataRequest.endpoint&0x80) {
-	    			write(sockfd,dataBuff,dataRequest.length);	
+	    			sendData(sockfd,dataBuff,64,readSize);	
 	    		}
+
+	    		printf("Endpoint (%02x) :",dataRequest.endpoint);
+	    		for(int i = 0 ; i < readSize ; i++) {
+	    			printf("%02x ",dataBuff[i]);
+	    		}
+	    		printf("\n");
 
 	    	}
     	}

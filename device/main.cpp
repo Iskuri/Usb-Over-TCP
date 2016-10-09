@@ -27,7 +27,7 @@ int sockfd, newsockfd, portno;
 int gadgetFile;
 
 static pthread_t gadgetThread;
-static pthread_t epThread;
+static pthread_t epThreads[32];
 static pthread_mutex_t deviceMutex;
 
 void setupPacket(struct DataPacket* dataPacket, struct usb_ctrlrequest *setup, uint8_t endpoint) {
@@ -50,11 +50,23 @@ int sendTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint, unsigned ch
 
 	if(setup != NULL) {
 		setupPacket(&dataPacket,setup,endpoint);
+	} else {
+		dataPacket.length = 64;
 	}
+
+	dataPacket.endpoint = endpoint;
 
 	write(newsockfd,(unsigned char*)&dataPacket,sizeof(struct DataPacket));
 
-	int writeVal = write(newsockfd,buff,length);
+	unsigned char* changedBuff = (unsigned char*)malloc(length+2);
+	memset(changedBuff,0x00,length+2);	
+	memcpy(changedBuff,(unsigned char*)&length,2);
+
+	memcpy(&changedBuff[2],buff,length);
+
+	int writeVal = write(newsockfd,changedBuff,length+2);
+
+	free(changedBuff);
 
 	pthread_mutex_unlock(&deviceMutex);
 
@@ -71,23 +83,42 @@ int receiveTransaction(struct usb_ctrlrequest *setup, uint8_t endpoint,unsigned 
 
 	if(setup != NULL) {
 		setupPacket(&dataPacket,setup,endpoint);
+	} else {
+		dataPacket.length = 64;
 	}
 
 	dataPacket.endpoint = endpoint;
 
-	printf("Writing new sock datapacket\n");
+	// printf("Writing new sock datapacket: %02x\n",endpoint);
+	
+	unsigned char* changedBuff = (unsigned char*)malloc(length+2);
+	memset(changedBuff,0x00,length+2);	
 
 	int writeDataPacketRet = write(newsockfd,(unsigned char*)&dataPacket,sizeof(struct DataPacket));
 
-	printf("Reading data back\n");
+	// printf("Reading data back\n");
 
-	int readVal = read(newsockfd,buff,length);
+	int readVal = read(newsockfd,changedBuff,length+2);
 
-	printf("Got readval: %d\n",readVal);
+	uint16_t receivedVal;
+	memcpy(&receivedVal,changedBuff,2);
+
+	memcpy(buff,&changedBuff[2],receivedVal);
+
+	printf("Got readval: (%d) ",receivedVal);
+
+	for(int i = 0 ; i < receivedVal ; i++) {
+		printf("%02x ",buff[i]);
+	}
+	printf("\n");
+
+	free(changedBuff);
 
 	pthread_mutex_unlock(&deviceMutex);
 
-	return readVal;
+	// printf("Exiting receivedVal\n");
+
+	return receivedVal;
 }
 
 static void handleSetup(struct usb_ctrlrequest *setup) {
@@ -96,7 +127,7 @@ static void handleSetup(struct usb_ctrlrequest *setup) {
 	uint16_t index = __le16_to_cpu(setup->wIndex);
 	uint16_t length = __le16_to_cpu(setup->wLength);
 
-	printf("Got USB bRequest: %d(%02x) with type %d(%02x) of length %d\n",setup->bRequest,setup->bRequest,setup->bRequestType, setup->bRequestType, setup->wLength);
+	// printf("Got USB bRequest: %d(%02x) with type %d(%02x) of length %d\n",setup->bRequest,setup->bRequest,setup->bRequestType, setup->bRequestType, setup->wLength);
 
 	// start transactions
 
@@ -105,24 +136,24 @@ static void handleSetup(struct usb_ctrlrequest *setup) {
 	if(setup->bRequestType&0x80) {
 
 		/* get buff */
-		printf("Receiving from host\n");
+		// printf("Receiving from host\n");
 		receiveTransaction(setup,0x00,buf,length);
 		write(gadgetFile, buf, length);
 
 	} else {
 
 		/* send buff */
-		printf("Sending to host\n");
+		// printf("Sending to host\n");
 		read(gadgetFile, buf, length);
 		sendTransaction(setup,0x00,buf,length);
 
 	}
 
-	printf("Got buff: ");
-	for(int i = 0 ; i < length ; i++) {
-		printf("%02x ",buf[i]);
-	}
-	printf("\n");
+	// printf("Got buff: ");
+	// for(int i = 0 ; i < length ; i++) {
+	// 	printf("%02x ",buf[i]);
+	// }
+	// printf("\n");
 
 	free(buf);
 
@@ -142,49 +173,61 @@ uint32_t setEps = 0;
 
 static void* checkEps(void* nothing) {
 
+	int i = *((int*)nothing);
+
+	printf("Nothing value: %d\n",i);
+
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
 	while(true) {
 
-		int pollVal = poll((pollfd*)&pollEps,pollEpsInc,500);
+		int pollVal = poll((pollfd*)&pollEps,pollEpsInc,5);
 
-		if(pollVal >= 0) { 
+		// for(int i = 0 ; i < pollEpsInc ; i++) {
 
-			//printf("Got poll: %d is revents\n",pollVal);
+			// printf("Checking pollval on: %d\n",i);
 
-			for(int i = 0 ; i < pollEpsInc ; i++) {
+			if((pollVal >= 0 || endpointInfo[i].ep&0x80) && setEps&((1<<(endpointInfo[i].ep&0xf))<<((endpointInfo[i].ep&0x80)?16:0))) { 
 
-			//	printf("Checking poll: %d\n",i);
+				// printf("Checking revents on: %d\n",i);
 
-				if(pollEps[i].revents) {
-					// printf("Got event for: %02x\n",endpointInfo[i].ep);
+				if(pollEps[i].revents || endpointInfo[i].ep&0x80) {
+
+					int readCount = 0;
 
 					if(endpointInfo[i].ep&0x80) {
 
 						// do host request
-						printf("Requesting in\n");
-						int readLength = receiveTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
-						write(pollEps[i].fd, endpointInfo[i].buff, readLength);
+						// printf("Before endpoint in transaction\n");
+						readCount = receiveTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
+
+						printf("(%d)Requesting in (%d): ",pollEps[i].fd,readCount);
+						if(readCount > 0) {
+							int writeVal = write(pollEps[i].fd, endpointInfo[i].buff, readCount);
+						}
 
 					} else {
 
-						printf("Requesting output!!\n");
+						// printf("On requesting out\n");
 
-						int readCount = read(pollEps[i].fd,endpointInfo[i].buff,64);
+						readCount = read(pollEps[i].fd,endpointInfo[i].buff,64);
 						printf("(%d)Requesting out (%d): ",pollEps[i].fd,readCount);
-						for(int j = 0 ; j < readCount ; j++) {
-							printf("%02x ",endpointInfo[i].buff[j]);
-						}
-						printf("\n");
 
 						int readLength = sendTransaction(NULL,endpointInfo[i].ep,endpointInfo[i].buff,64);
 
+						// printf("After send transaction\n");
+
 					}
 
-				}
-			}
+					for(int j = 0 ; j < readCount ; j++) {
+						printf("%02x ",endpointInfo[i].buff[j]);
+					}
+					printf("\n");
 
-		}
+				}
+			}		
+
+		// }
 
 	}
 
@@ -339,7 +382,7 @@ int main(int argc, char *argv[]) {
 		
 		pthread_create(&gadgetThread,0,gadgetCfgCb,NULL);
 
-		sleep(3);
+		// sleep(1);
 
 		int epPtr = 4;
 
@@ -357,7 +400,7 @@ int main(int argc, char *argv[]) {
 				char epBuffStr[0xff];
 				sprintf(epBuffStr,"/dev/gadget/ep%d%s",buffer[epPtr+2]&0xf,(buffer[epPtr+2]&0x80)?"in":"out");
 
-				int file = open(epBuffStr, O_CLOEXEC | O_RDWR);
+				int file = open(epBuffStr, O_CLOEXEC | O_RDWR | O_NONBLOCK);
 				printf("Writing to file %s (%d)\n",epBuffStr,file);
 
 				if(file>=0) {
@@ -377,15 +420,24 @@ int main(int argc, char *argv[]) {
 					}
 					printf("\n");
 
-				    int epWrite = write(file,epFileBuff,4+readSize*2);
+					int epWrite = -1;
+
+					while(epWrite < 0) {
+				    	epWrite = write(file,epFileBuff,4+readSize*2);
+					}
 				    free(epFileBuff);
-					printf("Ep write got: %d\n",epWrite);
+					// printf("Ep write got: %d\n",epWrite);
 
 					pollEps[pollEpsInc].fd = file;
 
-					pollEps[pollEpsInc].events=POLLIN | POLLHUP | POLLOUT;
+					pollEps[pollEpsInc].events=POLLIN | POLLOUT;
 
 					endpointInfo[pollEpsInc].ep = buffer[epPtr+2];
+
+					int* arg = (int*)malloc(4);
+					*arg = pollEpsInc;
+
+					pthread_create(&epThreads[pollEpsInc],0,checkEps,(void*)arg);
 
 					pollEpsInc++;
     				
@@ -396,7 +448,6 @@ int main(int argc, char *argv[]) {
 			epPtr += readSize;
 		}
 
-		pthread_create(&epThread,0,checkEps,NULL);
 
 	}
 
